@@ -47,6 +47,14 @@ struct Cli {
     #[arg(long, env = "OPENAI_API_KEY", hide_env_values = true)]
     api_key: String,
 
+    /// API endpoint (Responses API). Override to use an OpenAI-compatible API.
+    #[arg(
+        long,
+        default_value = "https://api.openai.com/v1/responses",
+        env = "OPENAI_BASE_URL"
+    )]
+    endpoint: String,
+
     /// Directory to also save every intermediate generation into (epoch_000.png, epoch_001.png, ...)
     #[arg(long)]
     save_intermediates: Option<PathBuf>,
@@ -145,7 +153,7 @@ async fn replicate_image(
         });
 
         let response = client
-            .post("https://api.openai.com/v1/responses")
+            .post(&cli.endpoint)
             .bearer_auth(&cli.api_key)
             .json(&body)
             .send()
