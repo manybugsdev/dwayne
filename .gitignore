@@ -1,1 +1,7 @@
 /target
+.env
+*.webp
+*.png
+*.jpg
+*.jpeg
+*.Identifier
