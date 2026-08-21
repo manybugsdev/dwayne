@@ -64,6 +64,18 @@ enum OutputItem {
         status: String,
         result: Option<String>,
     },
+    Message {
+        content: Vec<MessageContent>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum MessageContent {
+    OutputText { text: String },
+    Refusal { refusal: String },
     #[serde(other)]
     Other,
 }
@@ -149,17 +161,35 @@ async fn replicate_image(
         if status.is_success() {
             let parsed: ResponsesEnvelope = serde_json::from_slice(&body)
                 .context("failed to parse OpenAI API response")?;
-            let call = parsed
-                .output
-                .into_iter()
-                .find_map(|item| match item {
+            let mut call = None;
+            let mut messages = Vec::new();
+            for item in parsed.output {
+                match item {
                     OutputItem::ImageGenerationCall { status, result } => {
-                        Some((status, result))
+                        call = Some((status, result));
                     }
-                    OutputItem::Other => None,
-                })
-                .ok_or_else(|| anyhow!("OpenAI API response contained no image_generation_call"))?;
-            let (call_status, result) = call;
+                    OutputItem::Message { content } => {
+                        for c in content {
+                            match c {
+                                MessageContent::OutputText { text } => messages.push(text),
+                                MessageContent::Refusal { refusal } => messages.push(refusal),
+                                MessageContent::Other => {}
+                            }
+                        }
+                    }
+                    OutputItem::Other => {}
+                }
+            }
+            let (call_status, result) = call.ok_or_else(|| {
+                if messages.is_empty() {
+                    anyhow!("OpenAI API response contained no image_generation_call")
+                } else {
+                    anyhow!(
+                        "OpenAI API response contained no image_generation_call — model said: {}",
+                        messages.join(" / ")
+                    )
+                }
+            })?;
             if call_status != "completed" {
                 bail!("image generation did not complete (status: {call_status})");
             }
