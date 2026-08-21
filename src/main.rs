@@ -142,7 +142,7 @@ async fn replicate_image(
                 "role": "user",
                 "content": [
                     { "type": "input_text", "text": cli.prompt },
-                    { "type": "input_image", "image_url": image_url },
+                    { "type": "input_image", "image_url": image_url, "detail": "auto" },
                 ],
             }],
             "tools": [{
