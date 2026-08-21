@@ -35,8 +35,8 @@ struct Cli {
     )]
     prompt: String,
 
-    /// OpenAI image model to use
-    #[arg(long, default_value = "gpt-image-1")]
+    /// OpenAI Responses API model to use (must support the image_generation tool, e.g. gpt-5, gpt-4o)
+    #[arg(long, default_value = "gpt-5")]
     model: String,
 
     /// Output image size passed to the API (e.g. 1024x1024, 1024x1536, 1536x1024, auto)
@@ -53,13 +53,19 @@ struct Cli {
 }
 
 #[derive(Deserialize)]
-struct ImagesResponse {
-    data: Vec<ImageData>,
+struct ResponsesEnvelope {
+    output: Vec<OutputItem>,
 }
 
 #[derive(Deserialize)]
-struct ImageData {
-    b64_json: Option<String>,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OutputItem {
+    ImageGenerationCall {
+        status: String,
+        result: Option<String>,
+    },
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Deserialize)]
@@ -105,32 +111,31 @@ async fn replicate_image(
     loop {
         attempt += 1;
 
-        let filename = match mime {
-            "image/jpeg" => "image.jpg",
-            "image/webp" => "image.webp",
-            _ => "image.png",
-        };
-        let image_part = reqwest::multipart::Part::bytes(image_bytes.clone())
-            .file_name(filename)
-            .mime_str(mime)?;
+        let image_url = format!(
+            "data:{mime};base64,{}",
+            base64_engine.encode(&image_bytes)
+        );
 
-        let mut form = reqwest::multipart::Form::new()
-            .text("model", cli.model.clone())
-            .text("prompt", cli.prompt.clone())
-            .text("size", cli.size.clone())
-            .text("n", "1")
-            .part("image", image_part);
-
-        // gpt-image-1 always returns b64_json and rejects response_format;
-        // other models (e.g. dall-e-2) need it set explicitly.
-        if cli.model != "gpt-image-1" {
-            form = form.text("response_format", "b64_json");
-        }
+        let body = serde_json::json!({
+            "model": cli.model,
+            "input": [{
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": cli.prompt },
+                    { "type": "input_image", "image_url": image_url },
+                ],
+            }],
+            "tools": [{
+                "type": "image_generation",
+                "size": cli.size,
+                "quality": "auto",
+            }],
+        });
 
         let response = client
-            .post("https://api.openai.com/v1/images/edits")
+            .post("https://api.openai.com/v1/responses")
             .bearer_auth(&cli.api_key)
-            .multipart(form)
+            .json(&body)
             .send()
             .await
             .context("failed to reach OpenAI API")?;
@@ -142,13 +147,23 @@ async fn replicate_image(
             .context("failed to read OpenAI API response body")?;
 
         if status.is_success() {
-            let parsed: ImagesResponse = serde_json::from_slice(&body)
+            let parsed: ResponsesEnvelope = serde_json::from_slice(&body)
                 .context("failed to parse OpenAI API response")?;
-            let b64 = parsed
-                .data
+            let call = parsed
+                .output
                 .into_iter()
-                .next()
-                .and_then(|d| d.b64_json)
+                .find_map(|item| match item {
+                    OutputItem::ImageGenerationCall { status, result } => {
+                        Some((status, result))
+                    }
+                    OutputItem::Other => None,
+                })
+                .ok_or_else(|| anyhow!("OpenAI API response contained no image_generation_call"))?;
+            let (call_status, result) = call;
+            if call_status != "completed" {
+                bail!("image generation did not complete (status: {call_status})");
+            }
+            let b64 = result
                 .ok_or_else(|| anyhow!("OpenAI API response contained no image data"))?;
             return base64_engine
                 .decode(b64)
